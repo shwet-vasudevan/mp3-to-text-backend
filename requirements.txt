@@ -1,0 +1,5 @@
+Flask==2.3.3
+gunicorn==21.2.0
+vosk==0.3.45
+pydub==0.25.1
+Flask-Cors==4.0.0
