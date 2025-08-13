@@ -10,34 +10,35 @@ from flask_cors import CORS
 # --- Config ---
 UPLOAD_FOLDER = 'uploads'
 ALLOWED_EXTENSIONS = {'mp3'}
-MAX_CONTENT_LENGTH = 100 * 1024 * 1024  # 100 MB upload max
+MAX_CONTENT_LENGTH = 300 * 1024 * 1024  # 300 MB
 VOSK_MODEL_PATH = os.getenv("VOSK_MODEL_PATH", "vosk-model-small-en-us-0.15")
 
 # --- Init Flask ---
 app = Flask(__name__)
-CORS(app, resources={r"/*": {"origins": ["https://<your-username>.github.io"]}})  # replace <your-username>
+CORS(app)
 app.secret_key = os.urandom(24)
 app.config['UPLOAD_FOLDER'] = UPLOAD_FOLDER
 app.config['MAX_CONTENT_LENGTH'] = MAX_CONTENT_LENGTH
 
 os.makedirs(UPLOAD_FOLDER, exist_ok=True)
 
-def allowed_file(filename):
+def allowed_file(filename: str) -> bool:
     return isinstance(filename, str) and filename.lower().endswith('.mp3')
 
-def mp3_to_wav(mp3_path, wav_path):
+def mp3_to_wav(mp3_path: str, wav_path: str):
     audio = AudioSegment.from_file(mp3_path, format="mp3")
     audio = audio.set_channels(1).set_frame_rate(16000)
     audio.export(wav_path, format="wav")
 
-def audio_to_text(wav_file_path):
+def audio_to_text(wav_file_path: str) -> str:
     if not os.path.isdir(VOSK_MODEL_PATH):
-        raise FileNotFoundError(f"Vosk model not found at '{VOSK_MODEL_PATH}'")
+        raise FileNotFoundError(f"Vosk model not found at '{VOSK_MODEL_PATH}'.")
     model = Model(VOSK_MODEL_PATH)
     wf = wave.open(wav_file_path, "rb")
     rec = KaldiRecognizer(model, wf.getframerate())
     rec.SetWords(True)
 
+    # process in chunks to reduce memory usage
     parts = []
     while True:
         data = wf.readframes(4000)
@@ -63,20 +64,22 @@ def cleanup_files(paths):
         try:
             if p and os.path.exists(p):
                 os.remove(p)
-        except:
-            pass
+        except Exception as e:
+            app.logger.warning(f"Cleanup failed for {p}: {e}")
 
-@app.route("/", methods=["GET"])
+@app.route('/', methods=['GET'])
 def health():
     return jsonify({"status": "ok"}), 200
 
-@app.route("/upload", methods=["POST"])
+@app.route('/upload', methods=['POST'])
 def upload_file():
     if 'file' not in request.files:
         return jsonify({"error": "No file part"}), 400
+
     file = request.files['file']
     if not file or file.filename == '':
         return jsonify({"error": "No file selected"}), 400
+
     if not allowed_file(file.filename):
         return jsonify({"error": "Invalid file type. Only .mp3 allowed."}), 400
 
@@ -85,19 +88,27 @@ def upload_file():
     temp_mp3 = temp_wav = txt_path = None
 
     try:
-        temp_mp3 = os.path.join(UPLOAD_FOLDER, f"{base}_{os.urandom(6).hex()}.mp3")
+        temp_mp3 = os.path.join(app.config['UPLOAD_FOLDER'], f"{base}_{os.urandom(6).hex()}.mp3")
         file.save(temp_mp3)
-        temp_wav = os.path.join(UPLOAD_FOLDER, f"{base}_{os.urandom(6).hex()}.wav")
+
+        temp_wav = os.path.join(app.config['UPLOAD_FOLDER'], f"{base}_{os.urandom(6).hex()}.wav")
         mp3_to_wav(temp_mp3, temp_wav)
+
         transcript = audio_to_text(temp_wav)
-        txt_path = os.path.join(UPLOAD_FOLDER, f"{base}_{os.urandom(6).hex()}.txt")
+
+        txt_path = os.path.join(app.config['UPLOAD_FOLDER'], f"{base}_{os.urandom(6).hex()}.txt")
         with open(txt_path, "w", encoding="utf-8") as f:
             f.write(transcript)
+
         cleanup_files([temp_mp3, temp_wav])
-        return send_file(txt_path, as_attachment=True, download_name=f"{base}.txt", mimetype="text/plain")
-    except Exception as e:
+        return send_file(txt_path, as_attachment=True, download_name=f"{base}.txt", mimetype='text/plain')
+
+    except FileNotFoundError as e:
         cleanup_files([temp_mp3, temp_wav])
         return jsonify({"error": str(e)}), 500
+    except Exception as e:
+        cleanup_files([temp_mp3, temp_wav])
+        return jsonify({"error": "Internal server error: " + str(e)}), 500
 
-if __name__ == "__main__":
-    app.run(host="0.0.0.0", port=5000, debug=True)
+if __name__ == '__main__':
+    app.run(host='0.0.0.0', port=5000, debug=True)
